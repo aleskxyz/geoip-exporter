@@ -1,0 +1,68 @@
+name: Release Build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic make
+      
+      - name: Generate eBPF code for all architectures
+        run: make generate-ebpf-all
+      
+      - name: Build binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -a -ldflags '-extldflags "-static"' -o geoip-exporter-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/geoip-exporter
+      
+      - name: Create checksum
+        run: |
+          sha256sum geoip-exporter-${{ matrix.goos }}-${{ matrix.goarch }} > geoip-exporter-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+      
+      - name: Upload to release
+        if: github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.event.release.tag_name }} \
+            geoip-exporter-${{ matrix.goos }}-${{ matrix.goarch }} \
+            geoip-exporter-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+      
+      - name: Upload as artifacts (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: geoip-exporter-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            geoip-exporter-${{ matrix.goos }}-${{ matrix.goarch }}
+            geoip-exporter-${{ matrix.goos }}-${{ matrix.goarch }}.sha256

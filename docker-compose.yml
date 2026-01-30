@@ -1,0 +1,19 @@
+services:
+  geoip-exporter:
+    build: .
+    image: geoip-exporter:latest
+    container_name: geoip-exporter
+    network_mode: host
+    cap_add:
+      - CAP_BPF
+      - CAP_NET_ADMIN
+      - CAP_PERFMON
+    volumes:
+      - ./GeoLite2-Country.mmdb:/usr/share/GeoIP/GeoLite2-Country.mmdb:ro
+    command:
+      - --interfaces=any
+      - --map-max-entries=100000
+      - --poll-interval=2s
+      - --flow-batch-size=10000
+      - --log-level=info
+    restart: unless-stopped
