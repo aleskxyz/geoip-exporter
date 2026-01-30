@@ -42,19 +42,20 @@ type Config struct {
 }
 
 type Collector struct {
-	cfg            Config
-	objs           *bpf.Objects
-	linksByIface   map[int][]link.Link // ifindex -> [ingress, egress]; enables cleanup when interface is removed
-	attachedIfaces map[int]struct{}    // when interfaces=="any", track so we can attach to new ones
-	linksMu        sync.Mutex
-	geo            *geoip.Lookup
-	metrics        *metrics
-	shadow         map[flowKeyShadow]flowValShadow
-	countryCache   map[flowKeyShadow]string // country by flow key; only lookup GeoIP for new keys
-	prevStats      [types.NumStats]uint64   // previous kernel stats for counter deltas
-	shadowMu       sync.Mutex               // protects shadow, countryCache, prevStats
-	ifNameMap      map[int]string           // ifindex -> stable name
-	ifNameMu       sync.Mutex               // protects ifNameMap
+	cfg                   Config
+	objs                  *bpf.Objects
+	linksByIface          map[int][]link.Link // ifindex -> [ingress, egress]; enables cleanup when interface is removed
+	attachedIfaces        map[int]struct{}    // when interfaces=="any", track so we can attach to new ones
+	linksMu               sync.Mutex
+	geo                   *geoip.Lookup
+	metrics               *metrics
+	shadow                map[flowKeyShadow]flowValShadow
+	countryCache          map[flowKeyShadow]string // country by flow key; only lookup GeoIP for new keys
+	prevStats             [types.NumStats]uint64   // previous kernel stats for counter deltas
+	lastMinEvictionAgeSec float64                  // last known minimum eviction age; sticky until next eviction
+	shadowMu              sync.Mutex               // protects shadow, countryCache, prevStats, lastMinEvictionAgeSec
+	ifNameMap             map[int]string           // ifindex -> stable name
+	ifNameMu              sync.Mutex               // protects ifNameMap
 }
 
 type flowKeyShadow struct {
@@ -126,20 +127,22 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	c := &Collector{
-		cfg:            cfg,
-		objs:           &objs,
-		geo:            geo,
-		metrics:        newMetrics(),
-		shadow:         make(map[flowKeyShadow]flowValShadow),
-		countryCache:   make(map[flowKeyShadow]string),
-		ifNameMap:      make(map[int]string),
-		linksByIface:   make(map[int][]link.Link),
-		attachedIfaces: make(map[int]struct{}),
+		cfg:                   cfg,
+		objs:                  &objs,
+		geo:                   geo,
+		metrics:               newMetrics(),
+		shadow:                make(map[flowKeyShadow]flowValShadow),
+		countryCache:          make(map[flowKeyShadow]string),
+		ifNameMap:             make(map[int]string),
+		linksByIface:          make(map[int][]link.Link),
+		attachedIfaces:        make(map[int]struct{}),
+		lastMinEvictionAgeSec: math.Inf(1),
 	}
 	c.metrics.register()
 	c.metrics.configMapMaxEntries.Set(float64(cfg.MapMaxEntries))
 	c.metrics.configPollInterval.Set(cfg.PollInterval.Seconds())
 	c.metrics.configFlowBatchSize.Set(float64(cfg.FlowBatchSize))
+	c.metrics.evictionMinAgeSeconds.Set(math.Inf(1))
 
 	c.linksMu.Lock()
 	if err := c.attachTCLocked(interfaces); err != nil {
@@ -687,11 +690,13 @@ func (c *Collector) poll(ctx context.Context) error {
 	}
 
 	c.metrics.mapEntries.Set(float64(len(current)))
+	// Only update the metric when evictions actually occurred in this poll
+	// This makes the metric "sticky" - it retains the last known value
 	if evictionMinAgeSec < math.MaxFloat64 {
+		c.lastMinEvictionAgeSec = evictionMinAgeSec
 		c.metrics.evictionMinAgeSeconds.Set(evictionMinAgeSec)
-	} else {
-		c.metrics.evictionMinAgeSeconds.Set(math.NaN())
 	}
+	// If no evictions this poll, lastMinEvictionAgeSec and the metric retain their previous values
 
 	sums, _ := c.readStats()
 	slog.Debug("readStats", "packets_seen", sums[types.StatPacketsSeen], "lookup_fail", sums[types.StatLookupFail], "update_fail", sums[types.StatUpdateFail], "new_keys", sums[types.StatNewKeys], "evictions", sums[types.StatEvictionPressure])

@@ -87,7 +87,7 @@ func newMetrics() *metrics {
 		evictionMinAgeSeconds: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "geoip_ebpf_minimum_eviction_age_seconds",
-				Help: "Internal: minimum age in seconds among evicted flows. Should be greater than poll interval; lower indicates evicting recently-seen flows.",
+				Help: "Internal: minimum age in seconds among evicted flows. Should be greater than poll interval; lower indicates evicting recently-seen flows. Value is +Inf initially and retains the last known minimum eviction age until new evictions occur.",
 			},
 		),
 		mapReadDurationSeconds: prometheus.NewGauge(
